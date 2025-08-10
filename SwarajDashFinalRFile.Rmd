@@ -1,0 +1,326 @@
+---
+title: "R_finalCode"
+output: html_document
+date: "2025-07-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+#Loading all the necessary libraries
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(GGally)
+library(ggplot2)
+library(car)        
+library(lmtest)     
+library(MASS)
+library(dplyr)
+library(tidyverse)
+library(patchwork)
+library(readr)
+library(lubridate)
+```
+
+#Data Ingestion, wrangling, Taking Lagged values, and finally merging into a final dataset with lagged x variables. The Y variable is the TLT price avergae taken from the 1st to the 10th of every month. All variables are recorded in monthly freqency and for Federal Funds Rate which was only avaibles in dail frqency, we took the monthly avarage to convert it to the desired freqency. 
+
+```{r}
+#TLT ETF Data
+df_tlt <- read_csv("3year_TLT") %>%
+  mutate(Date = as.Date(Date))
+
+#CPI data
+df_cpi <- read_csv("CPIAUCSL.csv") %>%
+  rename(Date = observation_date, CPI = CPIAUCSL) %>%
+  mutate(Date = as.Date(Date))
+
+#Unemployment Rate Data
+df_unr <- read_csv("UNRATE.csv") %>%
+  rename(Date = observation_date, Unemp = UNRATE) %>%
+  mutate(Date = as.Date(Date))
+
+#GDP Data
+df_gdp <- read_csv("BBKMGDP.csv") %>%
+  rename(Date = observation_date, GDP = BBKMGDP) %>%
+  mutate(Date = as.Date(Date))
+
+# Federal FUnds Rate Data
+df_fed <- read_csv("FEDFUNDS.csv") %>%
+  rename(Date = observation_date, FedFunds = DFF) %>%
+  mutate(Date = as.Date(Date),
+         Year = year(Date), Month = month(Date)) %>%
+  group_by(Year, Month) %>%
+  summarise(FedFunds = mean(FedFunds, na.rm = TRUE), .groups = "drop") %>%
+  arrange(Year, Month) %>%
+  mutate(FedFunds_lag1 = lag(FedFunds))
+
+#Consumer Sentiment Data
+df_ums <- read_csv("UMCSENT.csv") %>%
+  rename(Date = observation_date, UMCSENT = UMCSENT) %>%
+  mutate(Date = as.Date(Date),
+         Year = year(Date), Month = month(Date)) %>%
+  arrange(Date)
+
+#Building the desired macro dataframe
+monthly_macro <- df_cpi %>%
+  mutate(Year = year(Date), Month = month(Date)) %>%
+  dplyr::select(Year, Month, Date, CPI) %>%
+  left_join(df_unr %>% mutate(Year = year(Date), Month = month(Date)) %>%
+              dplyr::select(Year, Month, Unemp),
+            by = c("Year","Month")) %>%
+  left_join(df_gdp %>% mutate(Year = year(Date), Month = month(Date)) %>%
+              dplyr::select(Year, Month, GDP),
+            by = c("Year","Month")) %>%
+  left_join(df_fed %>% dplyr::select(Year, Month, FedFunds_lag1),
+            by = c("Year","Month")) %>%
+  left_join(df_ums %>% dplyr::select(Year, Month, UMCSENT),
+            by = c("Year","Month")) %>%
+  drop_na()
+
+#taking TLT average from 1 to 10th of the month
+tlt_1_10 <- df_tlt %>%
+  filter(day(Date) >= 1 & day(Date) <= 10) %>%
+  mutate(Year = year(Date), Month = month(Date)) %>%
+  group_by(Year, Month) %>%
+  summarise(TLT_Avg_1_10 = mean(Close, na.rm = TRUE), .groups = "drop")
+
+#lagging procedure
+macro_lagged <- monthly_macro %>%
+  arrange(Year, Month) %>%
+  mutate(
+    CPI_lag = lag(CPI),
+    Unemp_lag = lag(Unemp),
+    GDP_lag = lag(GDP),
+    UMCSENT_lag = lag(UMCSENT)
+  ) %>%
+  dplyr::select(Year, Month, CPI_lag, Unemp_lag, GDP_lag,
+                UMCSENT_lag, FedFunds_lag1)
+
+# Merging
+df_lagged <- tlt_1_10 %>%
+  left_join(macro_lagged, by = c("Year", "Month")) %>%
+  drop_na()
+
+#Final Dataset is ready
+str(df_lagged)
+head(df_lagged)
+```
+#Below are the EDA procedures and the observations has been thorougly explained and conveyed in the Final Report and Presentation
+
+```{r}
+
+# Define variables and labels for EDA
+eda_vars <- c("TLT_Avg_1_10", "CPI_lag", "Unemp_lag", "GDP_lag", "FedFunds_lag1", "UMCSENT_lag")
+
+var_labels <- c(
+  TLT_Avg_1_10  = "TLT Avg Price (USD)",
+  CPI_lag       = "Monthly CPI Lag (Index)",
+  GDP_lag       = "Monthly GDP Lag (Annualized %, YoY)",
+  Unemp_lag     = "Unemployment Rate Lag (%)",
+  FedFunds_lag1 = "Federal Funds Rate Lag (%)",
+  UMCSENT_lag   = "Consumer Sentiment Index Lag (Index)"
+)
+
+# Histograms (Pre-standardization)
+df_lagged %>%
+  pivot_longer(all_of(eda_vars), names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(Value)) +
+  geom_histogram(bins = 20, fill = "lightpink", color = "black") +
+  facet_wrap(~ Variable, scales = "free", labeller = labeller(Variable = var_labels)) +
+  labs(title = "Histograms of Key Variables")
+
+# Boxplots (Pre-Standardization) -> Free-scale because of differing ranges/magnitudes
+df_lagged %>%
+  pivot_longer(all_of(eda_vars), names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = "", y = Value)) +
+  geom_boxplot() +
+  facet_wrap(~ Variable, scales = "free_y", labeller = labeller(Variable = var_labels)) +
+  labs(
+    title = "Boxplots (free scales)",
+    x = NULL,
+    y = NULL
+  ) 
+
+```
+#Scatter plot Matrix
+```{r}
+df_lagged %>%
+  dplyr::select(TLT_Avg_1_10, CPI_lag, Unemp_lag, GDP_lag, FedFunds_lag1, UMCSENT_lag) %>%
+  ggpairs()
+```
+
+#Normaizing Dataset to address differences in magnitude in some X variables and then conducting further EDA
+```{r}
+#turn into scaled data
+df_lagged_scaled <- df_lagged %>%
+  mutate(across(c(TLT_Avg_1_10, CPI_lag, Unemp_lag,
+                  GDP_lag, UMCSENT_lag, FedFunds_lag1),
+                ~ as.numeric(scale(.))))
+
+eda_vars <- c("TLT_Avg_1_10", "CPI_lag", "Unemp_lag",
+              "GDP_lag", "UMCSENT_lag", "FedFunds_lag1")
+
+df_long_scaled <- df_lagged_scaled %>%
+  pivot_longer(cols = all_of(eda_vars), 
+               names_to = "Variable", 
+               values_to = "Value")
+
+# Standardized Histograms
+ggplot(df_scaled, aes(x = Z)) +
+  geom_histogram(bins = 20, fill = "skyblue", color = "black") +
+  facet_wrap(~ Variable, scales = "free", ncol = 2) +
+  labs(title = "Standardized Histograms (Z-scores)", x = "Standard Deviation from Mean", y = "Count")
+
+ggplot(df_long_scaled, aes(x = Variable, y = Value, fill = Variable)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Boxplots of Scaled Variables", x = "Variable", y = "Scaled Value") +
+  theme(legend.position = "none")
+```
+
+#Scatterplot matrix for the normaized dataset. Didn't see much change from the non normalized set. 
+```{r}
+df_lagged_scaled %>%
+  dplyr::select(TLT_Avg_1_10, CPI_lag, Unemp_lag, GDP_lag, FedFunds_lag1, UMCSENT_lag) %>%
+  ggpairs()
+```
+
+#RUnning the initial model 
+```{r}
+#Taking the squared value of unemployment due to noticing a quadratic relationship between TLT price average and Unemployment rate
+df_lagged_scaled <- df_lagged_scaled %>%
+  mutate(Unemp2 = Unemp_lag^2)
+
+model_raw <- lm(TLT_Avg_1_10 ~ CPI_lag + Unemp_lag + GDP_lag + UMCSENT_lag + FedFunds_lag1, 
+                data = df_lagged_scaled)
+summary(model_raw)
+
+AIC(model_raw)
+vif(model_raw)
+dwtest(model_raw)
+
+par(mfrow = c(2,2))
+plot(model_raw)
+
+shapiro.test(residuals(model_raw))
+```
+
+#Using a step wise approach to recursively produce differnt models until the best model with the best AIC score and significant variables has been found
+```{r}
+null_model <- lm(TLT_Avg_1_10 ~ 1, data = df_lagged_scaled) #using no predictors
+
+full_model <- lm(TLT_Avg_1_10 ~ (CPI_lag + Unemp2 + GDP_lag +
+                   FedFunds_lag1 + UMCSENT_lag)^2,
+                 data = df_lagged_scaled) #using all predictors with all interaction approach
+
+step_model <- step(null_model,
+                   scope = list(lower = null_model, upper = full_model),
+                   direction = "both",
+                   test = "F") #using both forward and backward selection approach
+
+summary(step_model)
+
+AIC(step_model)
+
+```
+
+
+# A detailed report of the final model we aquired in the last step along with diagnostics. All results has been covered in the Final Report.
+
+```{r}
+final_model <- lm(
+  TLT_Avg_1_10 ~ CPI_lag + GDP_lag + Unemp2 +
+                  GDP_lag:Unemp2 + CPI_lag:GDP_lag,
+  data = df_lagged_scaled
+)
+
+summary(final_model)
+
+AIC(final_model)
+
+vif(final_model)
+
+dwtest(final_model)
+
+par(mfrow = c(2, 2))
+plot(final_model)
+
+shapiro.test(residuals(final_model))
+```
+
+#Scatterplot for observed vs predicted
+```{r}
+library(ggplot2)
+
+df_lagged_scaled$Predicted <- predict(final_model)
+df_lagged_scaled$Observed  <- df_lagged_scaled$TLT_Avg_1_10
+
+ggplot(df_lagged_scaled, aes(x = Observed, y = Predicted)) +
+  geom_point(color = "blue", size = 2, alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Predicted vs Observed (Final Model)",
+       x = "Observed TLT Average (1–10th)",
+       y = "Predicted TLT Average (1–10th)") +
+  theme_minimal()
+
+```
+
+#trying to improve model by removing high leverage points
+```{r}
+newdflagged = df_lagged_scaled[-c(3, 6, 9, 20, 21), ]  # Removes rows 3, 6, 9, 20, 21
+
+final_modelwolevsandoutliers <- lm(
+  TLT_Avg_1_10 ~ CPI_lag + GDP_lag + Unemp2 +
+                  GDP_lag:Unemp2 + CPI_lag:GDP_lag,
+  data = newdflagged
+)
+
+summary(final_modelwolevsandoutliers)
+
+vif(final_modelwolevsandoutliers)
+par(mfrow = c(2, 2))
+plot(final_modelwolevsandoutliers)
+dwtest(final_modelwolevsandoutliers)
+AIC(final_modelwolevsandoutliers)
+shapiro.test(residuals(final_modelwolevsandoutliers))
+```
+
+#It casued the model to overfit and introduce high bias so we won't be going forward with this model. Our final model is hence the one before this step which still contains the high leverage points to allow a little variance and better prediction power in the event of uncertainties. 
+
+#Now let's check some predictions for 2025 TLT average prices
+
+```{r}
+pred_point <- predict(final_model, newdata = df_2025_scaled)
+-
+pred_interval_95 <- predict(final_model, newdata = df_2025_scaled, interval = "prediction", level = 0.95)
+
+# transform back to original scale
+tlt_mean <- mean(df_lagged$TLT_Avg_1_10)
+tlt_sd   <- sd(df_lagged$TLT_Avg_1_10)
+
+pred_point_unscaled <- pred_point * tlt_sd + tlt_mean
+pred_interval_unscaled <- data.frame(
+  fit = pred_interval_95[, "fit"] * tlt_sd + tlt_mean,
+  lwr = pred_interval_95[, "lwr"] * tlt_sd + tlt_mean,
+  upr = pred_interval_95[, "upr"] * tlt_sd + tlt_mean
+)
+
+results <- data.frame(
+  Month = df_2025_jfm$Month,
+  Observed = df_2025_jfm$TLT_Avg_1_10,
+  Predicted = pred_point_unscaled,
+  Lwr_95 = pred_interval_unscaled$lwr,
+  Upr_95 = pred_interval_unscaled$upr
+)
+
+print(results)
+
+```
+
+
+
+
