@@ -2,6 +2,8 @@
 
 This repository contains a group final project for a regression analysis class that models short-term movements in the iShares 20+ Year Treasury Bond ETF (TLT) using lagged macroeconomic indicators and linear regression.
 
+Authors/Contributors: Allie Ordentlich, Swaraj Dash, Joshua Petrikat, Elif Turgut 
+
 ## Overview
 
 Goal: Predict the 1st–10th trading-day average of TLT each month (TLT_Avg_1_10) from macro indicators. 
